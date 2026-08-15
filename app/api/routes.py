@@ -1,11 +1,14 @@
 from uuid import uuid4
+import hashlib
+import hmac
 import logging
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.models import DMJob, Metric, Rule, WebhookEvent
 from app.schemas.rule import RuleCreate, RuleResponse
@@ -35,7 +38,10 @@ def create_rule(payload: RuleCreate, db: Session = Depends(get_db)) -> RuleRespo
 
 
 @router.post("/webhook", status_code=status.HTTP_200_OK)
-def receive_webhook(payload: WebhookPayload, db: Session = Depends(get_db)) -> dict[str, str]:
+async def receive_webhook(request: Request, db: Session = Depends(get_db)) -> dict[str, str]:
+    raw_body = await request.body()
+    _verify_webhook_signature(raw_body, request.headers.get("X-PseudoGram-Signature"))
+    payload = WebhookPayload.model_validate_json(raw_body)
     dm_job_ids: list[str] = []
     event = _build_webhook_event(payload)
     db.add(event)
@@ -54,6 +60,8 @@ def receive_webhook(payload: WebhookPayload, db: Session = Depends(get_db)) -> d
                 job_id = _create_dm_job(db, rule.id, user_id, payload.data.comment_id)
                 if job_id:
                     dm_job_ids.append(job_id)
+    elif payload.event_type == "comment.deleted":
+        _cancel_queued_jobs_for_comment(db, payload.data.comment_id)
 
     db.commit()
     _enqueue_dm_jobs(dm_job_ids)
@@ -116,7 +124,7 @@ def _count_jobs_by_status(db: Session, job_status: str) -> int:
 def _count_unresolved_jobs(db: Session) -> int:
     return (
         db.scalar(
-            select(func.count()).select_from(DMJob).where(DMJob.status.not_in(["failed", "delivered"]))
+            select(func.count()).select_from(DMJob).where(DMJob.status.not_in(["failed", "delivered", "canceled"]))
         )
         or 0
     )
@@ -143,3 +151,25 @@ def _enqueue_dm_jobs(job_ids: list[str]) -> None:
             process_dm_job.delay(job_id)
         except Exception:
             logger.exception("dm_enqueue_failed", extra={"job_id": job_id})
+
+
+def _verify_webhook_signature(raw_body: bytes, signature: str | None) -> None:
+    if not signature or not signature.startswith("sha256="):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid webhook signature")
+    expected = "sha256=" + hmac.new(
+        settings.pseudogram_api_key.encode("utf-8"),
+        raw_body,
+        hashlib.sha256,
+    ).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid webhook signature")
+
+
+def _cancel_queued_jobs_for_comment(db: Session, comment_id: str) -> None:
+    result = db.execute(
+        update(DMJob)
+        .where(DMJob.comment_id == comment_id, DMJob.status == "queued")
+        .values(status="canceled", canceled_at=func.now(), updated_at=func.now(), last_error="comment_deleted")
+    )
+    if result.rowcount:
+        logger.info("dm_jobs_canceled_for_deleted_comment", extra={"comment_id": comment_id, "count": result.rowcount})

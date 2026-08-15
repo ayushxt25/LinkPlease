@@ -51,6 +51,9 @@ Celery beat also scans accepted DM jobs for delivery reconciliation. A PseudoGra
 means accepted for delivery, not delivered. The worker later calls `GET /v1/dm/{dm_id}`
 until the remote status becomes `delivered` or `failed`.
 
+Webhook requests must include `X-PseudoGram-Signature: sha256=<hex>`, computed as
+HMAC-SHA256 over the exact raw request body using `PSEUDOGRAM_API_KEY`.
+
 DM job states:
 
 - `queued`: waiting to send or retry
@@ -59,6 +62,18 @@ DM job states:
 - `reconciling`: claimed by a reconciliation worker
 - `delivered`: confirmed delivered by reconciliation
 - `failed`: permanently abandoned
+- `canceled`: local queued job canceled by `comment.deleted`
+
+`comment.deleted` cancels only `queued` jobs for the deleted `comment_id`. `sending`
+is treated as potentially in-flight, and `accepted`/`reconciling`/`delivered` jobs are
+not unsent or marked failed.
+
+Stats map to states as follows:
+
+- `sent`: `delivered`
+- `failed`: `failed`
+- `queued`: `queued`, `sending`, `accepted`, `reconciling`
+- `duplicates_blocked`: durable duplicate DM attempts blocked by `(rule_id, user_id)`
 
 ## Test
 

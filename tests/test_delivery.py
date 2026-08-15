@@ -14,6 +14,7 @@ from app.main import app
 from app.models import DMJob, Rule
 from app.services.delivery import claim_job, process_dm_job_once, recover_queued_jobs
 from app.services.pseudogram import PseudoGramClient
+from tests.helpers import post_signed_webhook
 
 
 class AllowLimiter:
@@ -68,7 +69,10 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Generator[Te
     monkeypatch.setattr(process_dm_job, "delay", lambda job_id: None)
 
     def override_get_db() -> Generator[Session, None, None]:
-        yield db_session
+        try:
+            yield db_session
+        finally:
+            db_session.expunge_all()
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
@@ -220,7 +224,7 @@ def test_webhook_does_not_synchronously_send_external_dm(
 
     monkeypatch.setattr(PseudoGramClient, "send_dm", fail_if_called)
     client.post("/rules", json={"keyword": "PRICE", "dm_message": "Price list"})
-    response = client.post("/webhook", json=created_payload())
+    response = post_signed_webhook(client, created_payload())
 
     assert response.status_code == 200
     assert called is False
@@ -235,11 +239,13 @@ def test_recovery_finds_queued_db_job(db_session: Session) -> None:
 def test_recovery_requeues_stale_sending_job(db_session: Session) -> None:
     job = make_job(db_session)
     job.status = "sending"
+    job.idempotency_key = "dm:job_1:attempt:1"
     job.updated_at = datetime.now(timezone.utc) - timedelta(seconds=600)
     db_session.commit()
 
     assert recover_queued_jobs(db_session) == [job.id]
     assert db_session.get(DMJob, job.id).status == "queued"
+    assert db_session.get(DMJob, job.id).idempotency_key == "dm:job_1:attempt:1"
 
 
 def test_two_workers_cannot_claim_same_job(db_session: Session) -> None:

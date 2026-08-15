@@ -10,6 +10,7 @@ from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
 from app.models import DMJob, Rule, WebhookEvent
+from tests.helpers import post_signed_webhook
 
 
 @pytest.fixture()
@@ -36,7 +37,10 @@ def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Generator[Te
     monkeypatch.setattr(process_dm_job, "delay", lambda job_id: None)
 
     def override_get_db() -> Generator[Session, None, None]:
-        yield db_session
+        try:
+            yield db_session
+        finally:
+            db_session.expunge_all()
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
@@ -94,15 +98,15 @@ def test_stats_returns_exact_required_fields(client: TestClient) -> None:
 
 
 def test_webhook_accepts_comment_created_payload(client: TestClient) -> None:
-    response = client.post("/webhook", json=created_payload())
+    response = post_signed_webhook(client, created_payload())
 
     assert response.status_code == 200
 
 
 def test_webhook_accepts_comment_deleted_payload_with_only_comment_id(client: TestClient) -> None:
-    response = client.post(
-        "/webhook",
-        json={
+    response = post_signed_webhook(
+        client,
+        {
             "event_id": "evt_deleted_123",
             "event_type": "comment.deleted",
             "sent_at": "2026-08-10T09:15:22.481Z",
@@ -127,7 +131,7 @@ def test_rule_persists_and_can_be_matched(client: TestClient, db_session: Sessio
     assert rule_response.status_code == 201
     assert db_session.get(Rule, rule_response.json()["rule_id"]) is not None
 
-    webhook_response = client.post("/webhook", json=created_payload(text="PRICE please"))
+    webhook_response = post_signed_webhook(client, created_payload(text="PRICE please"))
 
     assert webhook_response.status_code == 200
     assert db_session.scalar(select(DMJob)) is not None
@@ -136,7 +140,7 @@ def test_rule_persists_and_can_be_matched(client: TestClient, db_session: Sessio
 def test_keyword_matching_is_case_insensitive(client: TestClient, db_session: Session) -> None:
     client.post("/rules", json={"keyword": "price", "dm_message": "Price list"})
 
-    client.post("/webhook", json=created_payload(text="Can I get the PRICE?"))
+    post_signed_webhook(client, created_payload(text="Can I get the PRICE?"))
 
     assert _job_count(db_session) == 1
 
@@ -144,7 +148,7 @@ def test_keyword_matching_is_case_insensitive(client: TestClient, db_session: Se
 def test_keyword_matching_allows_substrings(client: TestClient, db_session: Session) -> None:
     client.post("/rules", json={"keyword": "PRICE", "dm_message": "Price list"})
 
-    client.post("/webhook", json=created_payload(text="send price-list"))
+    post_signed_webhook(client, created_payload(text="send price-list"))
 
     assert _job_count(db_session) == 1
 
@@ -154,8 +158,8 @@ def test_same_user_and_rule_across_comments_creates_one_job(
 ) -> None:
     client.post("/rules", json={"keyword": "PRICE", "dm_message": "Price list"})
 
-    client.post("/webhook", json=created_payload(event_id="evt_1", comment_id="cmt_1"))
-    client.post("/webhook", json=created_payload(event_id="evt_2", comment_id="cmt_2"))
+    post_signed_webhook(client, created_payload(event_id="evt_1", comment_id="cmt_1"))
+    post_signed_webhook(client, created_payload(event_id="evt_2", comment_id="cmt_2"))
 
     assert _job_count(db_session) == 1
     assert client.get("/stats").json()["duplicates_blocked"] == 1
@@ -167,8 +171,8 @@ def test_same_event_id_redelivery_does_not_create_duplicate_work(
     client.post("/rules", json={"keyword": "PRICE", "dm_message": "Price list"})
     payload = created_payload(event_id="evt_same")
 
-    client.post("/webhook", json=payload)
-    client.post("/webhook", json=payload)
+    post_signed_webhook(client, payload)
+    post_signed_webhook(client, payload)
 
     assert _job_count(db_session) == 1
     assert client.get("/stats").json()["duplicates_blocked"] == 0
@@ -178,7 +182,7 @@ def test_same_user_can_match_two_different_rules(client: TestClient, db_session:
     client.post("/rules", json={"keyword": "PRICE", "dm_message": "Price list"})
     client.post("/rules", json={"keyword": "CATALOG", "dm_message": "Catalog"})
 
-    client.post("/webhook", json=created_payload(text="price and catalog please"))
+    post_signed_webhook(client, created_payload(text="price and catalog please"))
 
     assert _job_count(db_session) == 2
 
@@ -189,13 +193,10 @@ def test_duplicate_for_one_rule_does_not_block_new_job_for_another_rule(
     rule_a = client.post("/rules", json={"keyword": "PRICE", "dm_message": "Price list"}).json()
     rule_b = client.post("/rules", json={"keyword": "CATALOG", "dm_message": "Catalog"}).json()
 
-    client.post(
-        "/webhook",
-        json=created_payload(event_id="evt_existing", comment_id="cmt_existing", text="price"),
-    )
-    response = client.post(
-        "/webhook",
-        json=created_payload(
+    post_signed_webhook(client, created_payload(event_id="evt_existing", comment_id="cmt_existing", text="price"))
+    response = post_signed_webhook(
+        client,
+        created_payload(
             event_id="evt_mixed",
             comment_id="cmt_mixed",
             text="price and catalog please",
@@ -212,8 +213,8 @@ def test_duplicate_for_one_rule_does_not_block_new_job_for_another_rule(
 def test_two_users_can_each_match_same_rule(client: TestClient, db_session: Session) -> None:
     client.post("/rules", json={"keyword": "PRICE", "dm_message": "Price list"})
 
-    client.post("/webhook", json=created_payload(event_id="evt_1", user_id="usr_1", comment_id="cmt_1"))
-    client.post("/webhook", json=created_payload(event_id="evt_2", user_id="usr_2", comment_id="cmt_2"))
+    post_signed_webhook(client, created_payload(event_id="evt_1", user_id="usr_1", comment_id="cmt_1"))
+    post_signed_webhook(client, created_payload(event_id="evt_2", user_id="usr_2", comment_id="cmt_2"))
 
     assert _job_count(db_session) == 2
 
@@ -221,8 +222,8 @@ def test_two_users_can_each_match_same_rule(client: TestClient, db_session: Sess
 def test_stats_counts_queued_and_duplicates(client: TestClient) -> None:
     client.post("/rules", json={"keyword": "PRICE", "dm_message": "Price list"})
 
-    client.post("/webhook", json=created_payload(event_id="evt_1", comment_id="cmt_1"))
-    client.post("/webhook", json=created_payload(event_id="evt_2", comment_id="cmt_2"))
+    post_signed_webhook(client, created_payload(event_id="evt_1", comment_id="cmt_1"))
+    post_signed_webhook(client, created_payload(event_id="evt_2", comment_id="cmt_2"))
 
     assert client.get("/stats").json() == {
         "sent": 0,
@@ -235,9 +236,9 @@ def test_stats_counts_queued_and_duplicates(client: TestClient) -> None:
 def test_comment_deleted_does_not_create_dm_job(client: TestClient, db_session: Session) -> None:
     client.post("/rules", json={"keyword": "PRICE", "dm_message": "Price list"})
 
-    response = client.post(
-        "/webhook",
-        json={
+    response = post_signed_webhook(
+        client,
+        {
             "event_id": "evt_deleted_456",
             "event_type": "comment.deleted",
             "sent_at": "2026-08-10T09:15:22.481Z",

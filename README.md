@@ -12,6 +12,19 @@ FastAPI backend scaffold for receiving mock Instagram comment webhooks and manag
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+copy .env.example .env
+```
+
+Set `DATABASE_URL` in `.env` for PostgreSQL, for example:
+
+```text
+DATABASE_URL=postgresql+psycopg://linkplease:linkplease@localhost:5432/linkplease
+```
+
+Run migrations before starting the app:
+
+```bash
+alembic upgrade head
 ```
 
 ## Run Locally

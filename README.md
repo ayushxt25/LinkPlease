@@ -18,8 +18,14 @@ copy .env.example .env
 Set `DATABASE_URL` in `.env` for PostgreSQL, for example:
 
 ```text
+ENVIRONMENT=production
 DATABASE_URL=postgresql+psycopg://linkplease:linkplease@localhost:5432/linkplease
+REDIS_URL=redis://localhost:6379/0
+PSEUDOGRAM_API_KEY=replace-with-api-key
 ```
+
+Managed URLs beginning with `postgres://` or `postgresql://` are normalized to
+`postgresql+psycopg://`. SQLite is rejected when `ENVIRONMENT=production`.
 
 Run migrations before starting the app:
 
@@ -45,6 +51,22 @@ For periodic recovery of queued DB jobs, start Celery beat:
 
 ```bash
 celery -A app.worker.celery_app.celery_app beat --loglevel=info
+```
+
+Production process commands:
+
+```bash
+python -m alembic upgrade head
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
+celery -A app.worker.celery_app.celery_app worker --loglevel=info
+celery -A app.worker.celery_app.celery_app beat --loglevel=info
+```
+
+Docker:
+
+```bash
+docker build -t linkplease .
+docker run --env-file .env -p 8000:8000 linkplease
 ```
 
 Celery beat also scans accepted DM jobs for delivery reconciliation. A PseudoGram `202`
@@ -80,6 +102,40 @@ Stats map to states as follows:
 ```bash
 pytest
 ```
+
+## Manual Simulator Check
+
+After deployment:
+
+1. Run `python -m alembic upgrade head`
+2. Start web, worker, and beat processes
+3. Create rules:
+
+```bash
+curl -X POST https://your-app.example.com/rules ^
+  -H "Content-Type: application/json" ^
+  -d "{\"keyword\":\"PRICE\",\"dm_message\":\"Here's the price list\"}"
+```
+
+4. Start the simulator manually:
+
+```bash
+python scripts/run_simulation.py ^
+  --webhook-url https://your-app.example.com/webhook ^
+  --app-base-url https://your-app.example.com ^
+  --count 500 ^
+  --duration-seconds 10 ^
+  --poll-seconds 60
+```
+
+5. Compare simulator truth with:
+
+```bash
+curl https://your-app.example.com/stats
+```
+
+Then inspect worker/beat/web logs and database rows for discrepancies. Do not call
+the simulator from automated tests.
 
 ## API
 

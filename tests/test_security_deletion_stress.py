@@ -71,6 +71,22 @@ def test_missing_signature_rejected(client: TestClient, db_session: Session) -> 
     assert db_session.get(WebhookEvent, "evt_missing") is None
 
 
+def test_missing_api_key_fails_clearly(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "pseudogram_api_key", "")
+    raw = webhook_bytes(created_payload(event_id="evt_no_key"))
+
+    response = client.post(
+        "/webhook",
+        content=raw,
+        headers={"X-PseudoGram-Signature": "sha256=anything", "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "PSEUDOGRAM_API_KEY is required"
+
+
 def test_signature_uses_exact_raw_bytes(client: TestClient) -> None:
     payload = created_payload(event_id="evt_raw")
     raw = webhook_bytes(payload)

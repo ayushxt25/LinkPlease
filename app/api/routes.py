@@ -4,7 +4,7 @@ import hmac
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 
 
 @router.get("/health", status_code=status.HTTP_200_OK)
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health(db: Session = Depends(get_db)) -> dict[str, str]:
+    db.execute(text("SELECT 1"))
+    return {"status": "ok", "database": "ok"}
 
 
 @router.post("/rules", response_model=RuleResponse, status_code=status.HTTP_201_CREATED)
@@ -42,6 +43,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)) -> di
     raw_body = await request.body()
     _verify_webhook_signature(raw_body, request.headers.get("X-PseudoGram-Signature"))
     payload = WebhookPayload.model_validate_json(raw_body)
+    logger.info("webhook_received", extra={"event_id": payload.event_id, "event_type": payload.event_type})
     dm_job_ids: list[str] = []
     event = _build_webhook_event(payload)
     db.add(event)
@@ -49,6 +51,7 @@ async def receive_webhook(request: Request, db: Session = Depends(get_db)) -> di
         db.flush()
     except IntegrityError:
         db.rollback()
+        logger.info("webhook_duplicate_event", extra={"event_id": payload.event_id})
         return {"status": "accepted"}
 
     if payload.event_type == "comment.created" and payload.data.text and payload.data.from_user:
@@ -113,7 +116,9 @@ def _create_dm_job(db: Session, rule_id: str, user_id: str, comment_id: str) -> 
             )
     except IntegrityError:
         _increment_metric(db, "duplicates_blocked")
+        logger.info("dm_duplicate_blocked", extra={"rule_id": rule_id, "user_id": user_id})
         return None
+    logger.info("dm_job_created", extra={"job_id": job_id, "rule_id": rule_id})
     return job_id
 
 
@@ -156,11 +161,11 @@ def _enqueue_dm_jobs(job_ids: list[str]) -> None:
 def _verify_webhook_signature(raw_body: bytes, signature: str | None) -> None:
     if not signature or not signature.startswith("sha256="):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid webhook signature")
-    expected = "sha256=" + hmac.new(
-        settings.pseudogram_api_key.encode("utf-8"),
-        raw_body,
-        hashlib.sha256,
-    ).hexdigest()
+    try:
+        secret = settings.require_pseudogram_api_key()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    expected = "sha256=" + hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid webhook signature")
 

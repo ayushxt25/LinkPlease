@@ -5,7 +5,7 @@ from app.core.config import settings
 
 class PseudoGramClient:
     def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
-        self.api_key = api_key if api_key is not None else settings.pseudogram_api_key
+        self.api_key = api_key if api_key is not None else settings.require_pseudogram_api_key()
         self.base_url = (base_url or settings.pseudogram_base_url).rstrip("/")
 
     def send_dm(

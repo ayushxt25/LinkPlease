@@ -1,0 +1,12 @@
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.env
+alembic_validation.db
+linkplease.db
+dist
+build
+*.egg-info

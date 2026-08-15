@@ -2,7 +2,7 @@ from celery import Celery
 
 from app.core.config import settings
 
-celery_app = Celery("linkplease", broker=settings.redis_url)
+celery_app = Celery("linkplease", broker=settings.redis_url, backend=settings.celery_result_backend or settings.redis_url)
 celery_app.conf.timezone = "UTC"
 celery_app.conf.beat_schedule = {
     "recover-queued-dm-jobs": {

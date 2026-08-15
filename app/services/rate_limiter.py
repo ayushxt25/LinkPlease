@@ -23,10 +23,10 @@ redis.call('PEXPIRE', key, window)
 return 0
 """
 
-    def __init__(self, redis_url: str | None = None, limit: int = 10, window_seconds: int = 60) -> None:
+    def __init__(self, redis_url: str | None = None, limit: int | None = None, window_seconds: int | None = None) -> None:
         self.client = redis.Redis.from_url(redis_url or settings.redis_url)
-        self.limit = limit
-        self.window_ms = window_seconds * 1000
+        self.limit = limit or settings.pseudogram_send_rate_limit
+        self.window_ms = (window_seconds or settings.pseudogram_send_rate_window_seconds) * 1000
 
     def acquire(self, member: str) -> int:
         now_ms = int(time.time() * 1000)

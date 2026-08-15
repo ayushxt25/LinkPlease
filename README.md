@@ -29,8 +29,22 @@ alembic upgrade head
 
 ## Run Locally
 
+Start PostgreSQL and Redis, then run:
+
 ```bash
 uvicorn app.main:app --reload
+```
+
+In another terminal, start the Celery worker:
+
+```bash
+celery -A app.worker.celery_app.celery_app worker --loglevel=info
+```
+
+For periodic recovery of queued DB jobs, start Celery beat:
+
+```bash
+celery -A app.worker.celery_app.celery_app beat --loglevel=info
 ```
 
 ## Test

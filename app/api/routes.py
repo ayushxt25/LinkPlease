@@ -1,4 +1,5 @@
 from uuid import uuid4
+import logging
 
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import func, select, update
@@ -12,6 +13,7 @@ from app.schemas.stats import StatsResponse
 from app.schemas.webhook import WebhookPayload
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/health", status_code=status.HTTP_200_OK)
@@ -34,6 +36,7 @@ def create_rule(payload: RuleCreate, db: Session = Depends(get_db)) -> RuleRespo
 
 @router.post("/webhook", status_code=status.HTTP_200_OK)
 def receive_webhook(payload: WebhookPayload, db: Session = Depends(get_db)) -> dict[str, str]:
+    dm_job_ids: list[str] = []
     event = _build_webhook_event(payload)
     db.add(event)
     try:
@@ -48,17 +51,20 @@ def receive_webhook(payload: WebhookPayload, db: Session = Depends(get_db)) -> d
         rules = db.scalars(select(Rule)).all()
         for rule in rules:
             if rule.keyword.lower() in text:
-                _enqueue_dm_job(db, rule.id, user_id, payload.data.comment_id)
+                job_id = _create_dm_job(db, rule.id, user_id, payload.data.comment_id)
+                if job_id:
+                    dm_job_ids.append(job_id)
 
     db.commit()
+    _enqueue_dm_jobs(dm_job_ids)
     return {"status": "accepted"}
 
 
 @router.get("/stats", response_model=StatsResponse, status_code=status.HTTP_200_OK)
 def get_stats(db: Session = Depends(get_db)) -> StatsResponse:
-    sent = _count_jobs_by_status(db, "sent")
+    sent = _count_jobs_by_status(db, "delivered")
     failed = _count_jobs_by_status(db, "failed")
-    queued = _count_jobs_by_status(db, "queued")
+    queued = _count_unresolved_jobs(db)
     duplicates_blocked = _get_metric(db, "duplicates_blocked")
     return StatsResponse(
         sent=sent,
@@ -84,12 +90,13 @@ def _build_webhook_event(payload: WebhookPayload) -> WebhookEvent:
     )
 
 
-def _enqueue_dm_job(db: Session, rule_id: str, user_id: str, comment_id: str) -> None:
+def _create_dm_job(db: Session, rule_id: str, user_id: str, comment_id: str) -> str | None:
+    job_id = str(uuid4())
     try:
         with db.begin_nested():
             db.add(
                 DMJob(
-                    id=str(uuid4()),
+                    id=job_id,
                     rule_id=rule_id,
                     user_id=user_id,
                     comment_id=comment_id,
@@ -98,10 +105,21 @@ def _enqueue_dm_job(db: Session, rule_id: str, user_id: str, comment_id: str) ->
             )
     except IntegrityError:
         _increment_metric(db, "duplicates_blocked")
+        return None
+    return job_id
 
 
 def _count_jobs_by_status(db: Session, job_status: str) -> int:
     return db.scalar(select(func.count()).select_from(DMJob).where(DMJob.status == job_status)) or 0
+
+
+def _count_unresolved_jobs(db: Session) -> int:
+    return (
+        db.scalar(
+            select(func.count()).select_from(DMJob).where(DMJob.status.not_in(["failed", "delivered"]))
+        )
+        or 0
+    )
 
 
 def _get_metric(db: Session, key: str) -> int:
@@ -113,3 +131,15 @@ def _increment_metric(db: Session, key: str) -> None:
     result = db.execute(update(Metric).where(Metric.key == key).values(value=Metric.value + 1))
     if result.rowcount == 0:
         db.add(Metric(key=key, value=1))
+
+
+def _enqueue_dm_jobs(job_ids: list[str]) -> None:
+    if not job_ids:
+        return
+    from app.worker.tasks import process_dm_job
+
+    for job_id in job_ids:
+        try:
+            process_dm_job.delay(job_id)
+        except Exception:
+            logger.exception("dm_enqueue_failed", extra={"job_id": job_id})

@@ -16,6 +16,8 @@ class DMJob(Base):
     comment_id: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    delivery_attempt_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     external_dm_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -30,6 +32,7 @@ class DMJob(Base):
         nullable=False,
     )
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     rule = relationship("Rule", back_populates="dm_jobs")

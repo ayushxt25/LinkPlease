@@ -30,7 +30,11 @@ def db_session() -> Generator[Session, None, None]:
 
 
 @pytest.fixture()
-def client(db_session: Session) -> Generator[TestClient, None, None]:
+def client(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Generator[TestClient, None, None]:
+    from app.worker.tasks import process_dm_job
+
+    monkeypatch.setattr(process_dm_job, "delay", lambda job_id: None)
+
     def override_get_db() -> Generator[Session, None, None]:
         yield db_session
 

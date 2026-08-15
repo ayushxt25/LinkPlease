@@ -47,6 +47,19 @@ For periodic recovery of queued DB jobs, start Celery beat:
 celery -A app.worker.celery_app.celery_app beat --loglevel=info
 ```
 
+Celery beat also scans accepted DM jobs for delivery reconciliation. A PseudoGram `202`
+means accepted for delivery, not delivered. The worker later calls `GET /v1/dm/{dm_id}`
+until the remote status becomes `delivered` or `failed`.
+
+DM job states:
+
+- `queued`: waiting to send or retry
+- `sending`: claimed by a sender worker
+- `accepted`: PseudoGram accepted the DM, final delivery unknown
+- `reconciling`: claimed by a reconciliation worker
+- `delivered`: confirmed delivered by reconciliation
+- `failed`: permanently abandoned
+
 ## Test
 
 ```bash

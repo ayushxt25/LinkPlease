@@ -56,6 +56,7 @@ def process_dm_job_once(
         job.external_dm_id = body.get("dm_id")
         job.accepted_at = now
         job.updated_at = now
+        job.next_reconcile_at = now + timedelta(seconds=settings.dm_reconcile_delay_seconds)
         job.next_attempt_at = None
         job.last_error = None
         db.commit()
@@ -130,6 +131,99 @@ def recover_queued_jobs(db: Session, limit: int = 100) -> list[str]:
     )
 
 
+def reconcile_dm_job_once(
+    db: Session,
+    job_id: str,
+    client: PseudoGramClient | None = None,
+    schedule_reconcile: Scheduler | None = None,
+    schedule_send: Scheduler | None = None,
+) -> str:
+    job = claim_reconciliation(db, job_id)
+    if job is None:
+        return "not_claimed"
+
+    logger.info("dm_reconciliation_started", extra={"job_id": job.id, "external_dm_id": job.external_dm_id})
+    try:
+        response = (client or PseudoGramClient()).get_dm(job.external_dm_id)
+    except httpx.TimeoutException as exc:
+        return _reconcile_later(db, job, f"reconcile_timeout: {exc}", schedule_reconcile)
+    except httpx.TransportError as exc:
+        return _reconcile_later(db, job, f"reconcile_network_error: {exc}", schedule_reconcile)
+
+    if response.status_code == 200:
+        status_value = response.json().get("status")
+        if status_value == "queued":
+            logger.info("dm_remote_still_queued", extra={"job_id": job.id})
+            return _reconcile_later(db, job, "remote_queued", schedule_reconcile)
+        if status_value == "delivered":
+            now = _now()
+            job.status = "delivered"
+            job.delivered_at = now
+            job.last_reconciled_at = now
+            job.next_reconcile_at = None
+            job.next_attempt_at = None
+            job.updated_at = now
+            job.last_error = None
+            db.commit()
+            logger.info("dm_delivered", extra={"job_id": job.id})
+            return "delivered"
+        if status_value == "failed":
+            return _remote_delivery_failed(db, job, schedule_send)
+        return _reconcile_later(db, job, f"unexpected_remote_status:{status_value}", schedule_reconcile)
+
+    if response.status_code >= 500 or response.status_code in {408, 429}:
+        return _reconcile_later(db, job, _response_error(response, "reconcile_transient_http_error"), schedule_reconcile)
+
+    return _reconcile_later(db, job, _response_error(response, f"reconcile_unexpected_status_{response.status_code}"), schedule_reconcile)
+
+
+def claim_reconciliation(db: Session, job_id: str) -> DMJob | None:
+    now = _now()
+    result = db.execute(
+        update(DMJob)
+        .where(
+            DMJob.id == job_id,
+            DMJob.status == "accepted",
+            DMJob.external_dm_id.is_not(None),
+            (DMJob.next_reconcile_at.is_(None)) | (DMJob.next_reconcile_at <= now),
+        )
+        .values(
+            status="reconciling",
+            reconciliation_attempt_count=DMJob.reconciliation_attempt_count + 1,
+            last_reconciled_at=now,
+            updated_at=now,
+        )
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        return None
+    db.commit()
+    return db.get(DMJob, job_id)
+
+
+def recover_accepted_jobs(db: Session, limit: int = 100) -> list[str]:
+    now = _now()
+    stale_before = now - timedelta(seconds=settings.dm_reconciling_stale_seconds)
+    db.execute(
+        update(DMJob)
+        .where(DMJob.status == "reconciling", DMJob.updated_at <= stale_before)
+        .values(status="accepted", next_reconcile_at=now, updated_at=now, last_error="recovered_stale_reconciling")
+    )
+    db.commit()
+    return list(
+        db.scalars(
+            select(DMJob.id)
+            .where(
+                DMJob.status == "accepted",
+                DMJob.external_dm_id.is_not(None),
+                (DMJob.next_reconcile_at.is_(None)) | (DMJob.next_reconcile_at <= now),
+            )
+            .order_by(DMJob.accepted_at)
+            .limit(limit)
+        )
+    )
+
+
 def _transient_failure(db: Session, job: DMJob, error: str, schedule_retry: Scheduler | None) -> str:
     if job.attempt_count >= settings.dm_max_attempts:
         _mark_failed(db, job, f"retry_exhausted: {error}")
@@ -138,6 +232,47 @@ def _transient_failure(db: Session, job: DMJob, error: str, schedule_retry: Sche
     _retry_later(db, job, delay, error, schedule_retry)
     logger.info("dm_transient_retry", extra={"job_id": job.id, "retry_after": delay})
     return "retry"
+
+
+def _reconcile_later(db: Session, job: DMJob, error: str, schedule_reconcile: Scheduler | None) -> str:
+    now = _now()
+    delay = settings.dm_reconcile_delay_seconds
+    job.status = "accepted"
+    job.next_reconcile_at = now + timedelta(seconds=delay)
+    job.last_error = error
+    job.updated_at = now
+    db.commit()
+    if schedule_reconcile:
+        schedule_reconcile(job.id, delay)
+    logger.info("dm_reconciliation_retry", extra={"job_id": job.id, "retry_after": delay})
+    return "retry"
+
+
+def _remote_delivery_failed(db: Session, job: DMJob, schedule_send: Scheduler | None) -> str:
+    now = _now()
+    if job.delivery_attempt_number >= settings.dm_max_delivery_attempts:
+        job.status = "failed"
+        job.last_error = "remote_delivery_failed: delivery_attempts_exhausted"
+        job.next_reconcile_at = None
+        job.updated_at = now
+        db.commit()
+        logger.info("dm_remote_failed_exhausted", extra={"job_id": job.id})
+        return "failed"
+
+    job.delivery_attempt_number += 1
+    job.idempotency_key = _idempotency_key(job)
+    job.external_dm_id = None
+    job.accepted_at = None
+    job.next_reconcile_at = None
+    job.next_attempt_at = now
+    job.status = "queued"
+    job.last_error = "remote_delivery_failed: scheduling_new_delivery_attempt"
+    job.updated_at = now
+    db.commit()
+    if schedule_send:
+        schedule_send(job.id, 0)
+    logger.info("dm_new_delivery_attempt_scheduled", extra={"job_id": job.id, "attempt": job.delivery_attempt_number})
+    return "retry_send"
 
 
 def _retry_later(

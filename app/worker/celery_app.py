@@ -8,7 +8,11 @@ celery_app.conf.beat_schedule = {
     "recover-queued-dm-jobs": {
         "task": "app.worker.tasks.recover_queued_dm_jobs",
         "schedule": 30.0,
-    }
+    },
+    "recover-accepted-dm-jobs": {
+        "task": "app.worker.tasks.recover_accepted_dm_jobs",
+        "schedule": 30.0,
+    },
 }
 
 celery_app.autodiscover_tasks(["app.worker"])

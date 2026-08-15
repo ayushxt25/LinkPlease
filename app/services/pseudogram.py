@@ -26,3 +26,8 @@ class PseudoGramClient:
         }
         with httpx.Client(timeout=10.0) as client:
             return client.post(f"{self.base_url}/v1/dm/send", json=payload, headers=headers)
+
+    def get_dm(self, dm_id: str) -> httpx.Response:
+        headers = {"X-API-Key": self.api_key}
+        with httpx.Client(timeout=10.0) as client:
+            return client.get(f"{self.base_url}/v1/dm/{dm_id}", headers=headers)

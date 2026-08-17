@@ -181,6 +181,7 @@ def _log_invalid_signature(
 ) -> None:
     content_type = headers.get("content-type") if headers else None
     user_agent = headers.get("user-agent") if headers else None
+    key_fingerprint = hashlib.sha256(secret.encode("utf-8")).hexdigest()[:12]
     logger.warning(
         "webhook_signature_invalid "
         "header_exists=%s "
@@ -188,6 +189,7 @@ def _log_invalid_signature(
         "starts_sha256=%s "
         "expected_length=%s "
         "api_key_length=%s "
+        "api_key_fingerprint=%s "
         "body_length=%s "
         "content_type=%s "
         "user_agent=%s "
@@ -199,6 +201,7 @@ def _log_invalid_signature(
         signature.strip().startswith("sha256=") if signature else False,
         len(expected_signature),
         len(secret),
+        key_fingerprint,
         len(raw_body),
         content_type,
         user_agent,

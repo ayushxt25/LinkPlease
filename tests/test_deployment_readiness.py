@@ -31,3 +31,16 @@ def test_simulator_start_payload_shape() -> None:
         "count": 500,
         "duration_seconds": 10,
     }
+
+
+def test_render_startup_script_runs_required_processes_without_migrations() -> None:
+    script = Path("scripts/start_render.sh").read_text()
+    dockerfile = Path("Dockerfile").read_text()
+
+    assert "set -e" in script
+    assert "celery -A app.worker.celery_app.celery_app worker" in script
+    assert "--concurrency=1" in script
+    assert "celery -A app.worker.celery_app.celery_app beat" in script
+    assert 'exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}"' in script
+    assert "alembic upgrade" not in script
+    assert 'CMD ["sh", "scripts/start_render.sh"]' in dockerfile

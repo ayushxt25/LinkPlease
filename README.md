@@ -69,6 +69,22 @@ docker build -t linkplease .
 docker run --env-file .env -p 8000:8000 linkplease
 ```
 
+Render free-tier deployment note:
+
+The Docker image uses `scripts/start_render.sh` to run the FastAPI web server,
+one conservative Celery worker, and Celery beat in the same container:
+
+```bash
+sh scripts/start_render.sh
+```
+
+This is a deployment compromise for Render's free tier. PostgreSQL remains the
+durable source of truth, and Redis/Celery are only used to wake background work.
+If the free service sleeps or Redis enqueue is missed, queued database work and
+accepted reconciliation work are recovered when the process resumes. The
+co-located web/worker/beat setup has limited CPU and memory isolation and should
+be called out honestly in `FAILURES.md` after real simulator testing.
+
 Celery beat also scans accepted DM jobs for delivery reconciliation. A PseudoGram `202`
 means accepted for delivery, not delivered. The worker later calls `GET /v1/dm/{dm_id}`
 until the remote status becomes `delivered` or `failed`.

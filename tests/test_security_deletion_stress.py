@@ -49,6 +49,21 @@ def test_valid_signature_accepted(client: TestClient) -> None:
     assert post_signed_webhook(client, created_payload()).status_code == 200
 
 
+def test_signature_header_surrounding_whitespace_is_accepted(client: TestClient) -> None:
+    raw = webhook_bytes(created_payload(event_id="evt_sig_spaces"))
+
+    response = client.post(
+        "/webhook",
+        content=raw,
+        headers={
+            "X-PseudoGram-Signature": f"  {signature(raw)}  ",
+            "Content-Type": "application/json",
+        },
+    )
+
+    assert response.status_code == 200
+
+
 def test_literal_raw_unicode_body_signature_is_accepted(client: TestClient) -> None:
     raw = (
         b'{"event_id":"evt_literal_unicode","event_type":"comment.created",'
@@ -107,6 +122,18 @@ def test_invalid_signature_rejected_and_persists_nothing(client: TestClient, db_
     assert response.status_code == 401
     assert db_session.get(WebhookEvent, "evt_bad_sig") is None
     assert db_session.scalars(select(DMJob)).all() == []
+
+
+def test_malformed_signature_still_fails(client: TestClient) -> None:
+    raw = webhook_bytes(created_payload(event_id="evt_malformed_sig"))
+
+    response = client.post(
+        "/webhook",
+        content=raw,
+        headers={"X-PseudoGram-Signature": "sha256=not-a-valid-hmac", "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 401
 
 
 def test_missing_signature_rejected(client: TestClient, db_session: Session) -> None:

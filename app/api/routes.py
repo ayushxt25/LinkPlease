@@ -4,6 +4,7 @@ import hmac
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from starlette.datastructures import Headers
 from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -41,7 +42,7 @@ def create_rule(payload: RuleCreate, db: Session = Depends(get_db)) -> RuleRespo
 @router.post("/webhook", status_code=status.HTTP_200_OK)
 async def receive_webhook(request: Request, db: Session = Depends(get_db)) -> dict[str, str]:
     raw_body = await request.body()
-    _verify_webhook_signature(raw_body, request.headers.get("X-PseudoGram-Signature"))
+    _verify_webhook_signature(raw_body, request.headers.get("X-PseudoGram-Signature"), request.headers)
     payload = WebhookPayload.model_validate_json(raw_body)
     logger.info("webhook_received", extra={"event_id": payload.event_id, "event_type": payload.event_type})
     dm_job_ids: list[str] = []
@@ -158,38 +159,53 @@ def _enqueue_dm_jobs(job_ids: list[str]) -> None:
             logger.exception("dm_enqueue_failed", extra={"job_id": job_id})
 
 
-def _verify_webhook_signature(raw_body: bytes, signature: str | None) -> None:
-    if not signature or not signature.startswith("sha256="):
-        logger.warning(
-            "webhook_signature_invalid",
-            extra={
-                "signature_present": signature is not None,
-                "received_signature_length": len(signature) if signature else 0,
-                "received_starts_sha256": signature.startswith("sha256=") if signature else False,
-                "expected_signature_length": len("sha256=") + 64,
-                "api_key_length": len(settings.pseudogram_api_key),
-                "raw_body_byte_length": len(raw_body),
-            },
-        )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid webhook signature")
+def _verify_webhook_signature(raw_body: bytes, signature: str | None, headers: Headers | None = None) -> None:
     try:
         secret = settings.require_pseudogram_api_key()
     except RuntimeError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
-    expected = "sha256=" + hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, signature):
-        logger.warning(
-            "webhook_signature_invalid",
-            extra={
-                "signature_present": True,
-                "received_signature_length": len(signature),
-                "received_starts_sha256": signature.startswith("sha256="),
-                "expected_signature_length": len(expected),
-                "api_key_length": len(secret),
-                "raw_body_byte_length": len(raw_body),
-            },
-        )
+    expected_hex = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+    expected_signature = f"sha256={expected_hex}"
+    received_signature = signature.strip() if signature else None
+    if not received_signature or not hmac.compare_digest(expected_signature, received_signature):
+        _log_invalid_signature(raw_body, signature, expected_signature, secret, headers)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid webhook signature")
+
+
+def _log_invalid_signature(
+    raw_body: bytes,
+    signature: str | None,
+    expected_signature: str,
+    secret: str,
+    headers: Headers | None,
+) -> None:
+    content_type = headers.get("content-type") if headers else None
+    user_agent = headers.get("user-agent") if headers else None
+    logger.warning(
+        "webhook_signature_invalid "
+        "header_exists=%s "
+        "received_length=%s "
+        "starts_sha256=%s "
+        "expected_length=%s "
+        "api_key_length=%s "
+        "body_length=%s "
+        "content_type=%s "
+        "user_agent=%s "
+        "has_surrounding_whitespace=%s "
+        "stripped_length=%s "
+        "signature_equals_strip=%s",
+        signature is not None,
+        len(signature) if signature else 0,
+        signature.strip().startswith("sha256=") if signature else False,
+        len(expected_signature),
+        len(secret),
+        len(raw_body),
+        content_type,
+        user_agent,
+        signature != signature.strip() if signature else False,
+        len(signature.strip()) if signature else 0,
+        signature == signature.strip() if signature else False,
+    )
 
 
 def _cancel_queued_jobs_for_comment(db: Session, comment_id: str) -> None:

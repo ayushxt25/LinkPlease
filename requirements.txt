@@ -7,4 +7,4 @@ SQLAlchemy==2.0.43
 alembic==1.16.4
 psycopg[binary]==3.2.9
 celery[redis]==5.5.3
-redis==6.4.0
+redis==5.2.1

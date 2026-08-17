@@ -11,6 +11,10 @@ def test_postgres_urls_are_normalized_for_psycopg() -> None:
     assert Settings(database_url="postgresql://u:p@host/db").database_url == "postgresql+psycopg://u:p@host/db"
 
 
+def test_pseudogram_api_key_is_trimmed() -> None:
+    assert Settings(pseudogram_api_key="  secret-value\n").pseudogram_api_key == "secret-value"
+
+
 def test_sqlite_is_rejected_in_production() -> None:
     settings = Settings(environment="production", database_url="sqlite:///bad.db")
 

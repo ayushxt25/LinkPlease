@@ -160,6 +160,17 @@ def _enqueue_dm_jobs(job_ids: list[str]) -> None:
 
 def _verify_webhook_signature(raw_body: bytes, signature: str | None) -> None:
     if not signature or not signature.startswith("sha256="):
+        logger.warning(
+            "webhook_signature_invalid",
+            extra={
+                "signature_present": signature is not None,
+                "received_signature_length": len(signature) if signature else 0,
+                "received_starts_sha256": signature.startswith("sha256=") if signature else False,
+                "expected_signature_length": len("sha256=") + 64,
+                "api_key_length": len(settings.pseudogram_api_key),
+                "raw_body_byte_length": len(raw_body),
+            },
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid webhook signature")
     try:
         secret = settings.require_pseudogram_api_key()
@@ -167,6 +178,17 @@ def _verify_webhook_signature(raw_body: bytes, signature: str | None) -> None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     expected = "sha256=" + hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, signature):
+        logger.warning(
+            "webhook_signature_invalid",
+            extra={
+                "signature_present": True,
+                "received_signature_length": len(signature),
+                "received_starts_sha256": signature.startswith("sha256="),
+                "expected_signature_length": len(expected),
+                "api_key_length": len(secret),
+                "raw_body_byte_length": len(raw_body),
+            },
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid webhook signature")
 
 

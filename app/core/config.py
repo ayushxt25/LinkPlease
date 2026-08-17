@@ -29,6 +29,11 @@ class Settings(BaseSettings):
             return "postgresql+psycopg://" + value.removeprefix("postgresql://")
         return value
 
+    @field_validator("pseudogram_api_key")
+    @classmethod
+    def normalize_pseudogram_api_key(cls, value: str) -> str:
+        return value.strip()
+
     def validate_runtime(self) -> None:
         if self.environment.lower() == "production" and self.database_url.startswith("sqlite"):
             raise RuntimeError("SQLite DATABASE_URL is not allowed in production")

@@ -49,6 +49,51 @@ def test_valid_signature_accepted(client: TestClient) -> None:
     assert post_signed_webhook(client, created_payload()).status_code == 200
 
 
+def test_literal_raw_unicode_body_signature_is_accepted(client: TestClient) -> None:
+    raw = (
+        b'{"event_id":"evt_literal_unicode","event_type":"comment.created",'
+        b'"sent_at":"2026-08-10T09:14:22.481Z","data":{"comment_id":"cmt_literal",'
+        b'"post_id":"post_1","text":"PRICE please \xf0\x9f\x99\x8f",'
+        b'"created_at":"2026-08-10T09:14:21.900Z",'
+        b'"from":{"user_id":"usr_literal","username":"literal"}}}'
+    )
+
+    response = client.post(
+        "/webhook",
+        content=raw,
+        headers={"X-PseudoGram-Signature": signature(raw), "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
+
+
+def test_signature_must_match_exact_serialized_bytes(client: TestClient) -> None:
+    compact = (
+        b'{"event_id":"evt_exact_bytes","event_type":"comment.deleted",'
+        b'"sent_at":"2026-08-10T09:15:22.481Z","data":{"comment_id":"cmt_exact"}}'
+    )
+    pretty = (
+        b'{\n  "event_id": "evt_exact_bytes",\n  "event_type": "comment.deleted",\n'
+        b'  "sent_at": "2026-08-10T09:15:22.481Z",\n'
+        b'  "data": {"comment_id": "cmt_exact"}\n}'
+    )
+
+    rejected = client.post(
+        "/webhook",
+        content=pretty,
+        headers={"X-PseudoGram-Signature": signature(compact), "Content-Type": "application/json"},
+    )
+    accepted = client.post(
+        "/webhook",
+        content=pretty,
+        headers={"X-PseudoGram-Signature": signature(pretty), "Content-Type": "application/json"},
+    )
+
+    assert signature(compact) != signature(pretty)
+    assert rejected.status_code == 401
+    assert accepted.status_code == 200
+
+
 def test_invalid_signature_rejected_and_persists_nothing(client: TestClient, db_session: Session) -> None:
     client.post("/rules", json={"keyword": "PRICE", "dm_message": "Price list"})
     raw = webhook_bytes(created_payload(event_id="evt_bad_sig"))

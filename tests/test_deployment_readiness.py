@@ -15,6 +15,10 @@ def test_pseudogram_api_key_is_trimmed() -> None:
     assert Settings(pseudogram_api_key="  secret-value\n").pseudogram_api_key == "secret-value"
 
 
+def test_webhook_signature_verification_defaults_true() -> None:
+    assert Settings().verify_webhook_signatures is True
+
+
 def test_sqlite_is_rejected_in_production() -> None:
     settings = Settings(environment="production", database_url="sqlite:///bad.db")
 

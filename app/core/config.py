@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     celery_result_backend: str | None = None
     pseudogram_api_key: str = ""
     pseudogram_base_url: str = "https://pseudogram-api.onrender.com"
+    verify_webhook_signatures: bool = True
     pseudogram_send_rate_limit: int = 10
     pseudogram_send_rate_window_seconds: int = 60
     dm_max_attempts: int = 5

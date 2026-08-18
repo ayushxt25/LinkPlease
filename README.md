@@ -91,6 +91,10 @@ until the remote status becomes `delivered` or `failed`.
 
 Webhook requests must include `X-PseudoGram-Signature: sha256=<hex>`, computed as
 HMAC-SHA256 over the exact raw request body using `PSEUDOGRAM_API_KEY`.
+`VERIFY_WEBHOOK_SIGNATURES` defaults to `true`. The deployed simulator environment
+may run with `VERIFY_WEBHOOK_SIGNATURES=false` because the live simulator's HMAC did
+not match the documented raw-body algorithm despite identical API-key fingerprints.
+Strict verification remains implemented and enabled by default.
 
 DM job states:
 

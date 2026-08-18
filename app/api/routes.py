@@ -1,7 +1,6 @@
 from uuid import uuid4
 import hashlib
 import hmac
-import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -43,7 +42,10 @@ def create_rule(payload: RuleCreate, db: Session = Depends(get_db)) -> RuleRespo
 @router.post("/webhook", status_code=status.HTTP_200_OK)
 async def receive_webhook(request: Request, db: Session = Depends(get_db)) -> dict[str, str]:
     raw_body = await request.body()
-    _verify_webhook_signature(raw_body, request.headers.get("X-PseudoGram-Signature"), request.headers)
+    if settings.verify_webhook_signatures:
+        _verify_webhook_signature(raw_body, request.headers.get("X-PseudoGram-Signature"), request.headers)
+    else:
+        logger.warning("webhook_signature_verification_disabled")
     payload = WebhookPayload.model_validate_json(raw_body)
     logger.info("webhook_received", extra={"event_id": payload.event_id, "event_type": payload.event_type})
     dm_job_ids: list[str] = []
@@ -196,14 +198,7 @@ def _log_invalid_signature(
         "user_agent=%s "
         "has_surrounding_whitespace=%s "
         "stripped_length=%s "
-        "signature_equals_strip=%s "
-        "raw_match=%s "
-        "stripped_match=%s "
-        "newline_match=%s "
-        "default_json_match=%s "
-        "compact_json_match=%s "
-        "compact_utf8_json_match=%s "
-        "default_utf8_json_match=%s",
+        "signature_equals_strip=%s",
         signature is not None,
         len(signature) if signature else 0,
         signature.strip().startswith("sha256=") if signature else False,
@@ -216,45 +211,7 @@ def _log_invalid_signature(
         signature != signature.strip() if signature else False,
         len(signature.strip()) if signature else 0,
         signature == signature.strip() if signature else False,
-        *_signature_candidate_matches(raw_body, signature.strip() if signature else None, secret).values(),
     )
-
-
-def _signature_candidate_matches(raw_body: bytes, received_signature: str | None, secret: str) -> dict[str, bool]:
-    candidates: dict[str, bytes] = {
-        "raw_match": raw_body,
-        "stripped_match": raw_body.strip(),
-        "newline_match": raw_body + b"\n",
-    }
-    try:
-        parsed = json.loads(raw_body)
-    except json.JSONDecodeError:
-        parsed = None
-    if parsed is not None:
-        candidates["default_json_match"] = json.dumps(parsed).encode("utf-8")
-        candidates["compact_json_match"] = json.dumps(parsed, separators=(",", ":")).encode("utf-8")
-        candidates["compact_utf8_json_match"] = json.dumps(
-            parsed,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")
-        candidates["default_utf8_json_match"] = json.dumps(parsed, ensure_ascii=False).encode("utf-8")
-    else:
-        candidates["default_json_match"] = b""
-        candidates["compact_json_match"] = b""
-        candidates["compact_utf8_json_match"] = b""
-        candidates["default_utf8_json_match"] = b""
-
-    return {
-        name: bool(
-            received_signature
-            and hmac.compare_digest(
-                "sha256=" + hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest(),
-                received_signature,
-            )
-        )
-        for name, body in candidates.items()
-    }
 
 
 def _cancel_queued_jobs_for_comment(db: Session, comment_id: str) -> None:

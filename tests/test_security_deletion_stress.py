@@ -149,6 +149,44 @@ def test_invalid_signature_rejected_and_persists_nothing(client: TestClient, db_
     assert db_session.scalars(select(DMJob)).all() == []
 
 
+def test_signature_disabled_processes_invalid_signature(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "verify_webhook_signatures", False)
+    client.post("/rules", json={"keyword": "PRICE", "dm_message": "Price list"})
+    raw = webhook_bytes(created_payload(event_id="evt_sig_disabled", comment_id="cmt_sig_disabled"))
+
+    response = client.post(
+        "/webhook",
+        content=raw,
+        headers={"X-PseudoGram-Signature": "sha256=bad", "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 200
+    assert db_session.get(WebhookEvent, "evt_sig_disabled") is not None
+    assert db_session.scalar(select(DMJob).where(DMJob.comment_id == "cmt_sig_disabled")) is not None
+
+
+def test_signature_disabled_processes_missing_signature(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "verify_webhook_signatures", False)
+    raw = webhook_bytes(created_payload(event_id="evt_no_sig_disabled", comment_id="cmt_no_sig_disabled"))
+
+    response = client.post("/webhook", content=raw, headers={"Content-Type": "application/json"})
+
+    assert response.status_code == 200
+    assert db_session.get(WebhookEvent, "evt_no_sig_disabled") is not None
+
+
 def test_malformed_signature_still_fails(client: TestClient) -> None:
     raw = webhook_bytes(created_payload(event_id="evt_malformed_sig"))
 

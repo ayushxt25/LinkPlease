@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
-    logger.info(
+    logger.warning(
         "webhook_signature_verification_config enabled=%s",
         settings.verify_webhook_signatures,
     )

@@ -109,7 +109,7 @@ def test_signature_must_match_exact_serialized_bytes(client: TestClient) -> None
     assert accepted.status_code == 200
 
 
-def test_candidate_diagnostics_do_not_accept_compact_signature_for_pretty_body(client: TestClient) -> None:
+def test_hmac_does_not_accept_compact_signature_for_pretty_body(client: TestClient) -> None:
     compact = b'{"event_id":"evt_candidate","event_type":"comment.deleted","data":{"comment_id":"cmt_candidate"}}'
     pretty = b'{\n  "event_id": "evt_candidate",\n  "event_type": "comment.deleted",\n  "data": {"comment_id": "cmt_candidate"}\n}'
 
@@ -122,7 +122,7 @@ def test_candidate_diagnostics_do_not_accept_compact_signature_for_pretty_body(c
     assert response.status_code == 401
 
 
-def test_candidate_diagnostics_do_not_accept_newline_variant(client: TestClient) -> None:
+def test_hmac_does_not_accept_newline_variant(client: TestClient) -> None:
     raw = b'{"event_id":"evt_newline_variant","event_type":"comment.deleted","data":{"comment_id":"cmt_newline"}}'
 
     response = client.post(

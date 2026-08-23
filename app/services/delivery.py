@@ -49,7 +49,7 @@ def process_dm_job_once(
     except httpx.TransportError as exc:
         return _transient_failure(db, job, f"network_error: {exc}", schedule_retry)
 
-    if response.status_code == 202:
+    if response.status_code in {200, 202}:
         body = response.json()
         now = _now()
         job.status = "accepted"
